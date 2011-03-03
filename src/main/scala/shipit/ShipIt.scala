@@ -3,6 +3,7 @@ package shipit
 import sbt.processor.{ProcessorResult, Success, Reload}
 import sbt.{OpaqueVersion, BasicVersion, Project}
 import sbt.Process._
+import java.io.File
 
 object ShipIt {
 
@@ -10,28 +11,44 @@ object ShipIt {
     def handle(version: BasicVersion) = {
 
       val repoIsClean = ("git status --porcelain" !! project.log).trim.isEmpty
+      val isGit = new File(".git").isDirectory
 
-      def tag(version: BasicVersion) {
-        project.log.info("Tagging with git")
-        ("git tag v" + version.toString.trim) ! project.log
-        "git push --tags" ! project.log
+      def help {
+        project.log.info("Available commands:\n" +
+                " ship - tags, publishes project and bumps version\n" +
+                " tag  - tags version in git\n" +
+                " bump - increments version")
       }
 
-      def bump(project: Project, version: BasicVersion) {
-        val newVersion: BasicVersion = incrementVersion(version)
-        val buildProperties: String = project.envBackingPath.toString
-        replaceContentInFile(buildProperties, "project.version=", newVersion.toString)
-        ("git add " + buildProperties ! project.log)
-        ("git commit -m [shipit]:bump" ! project.log)
-        ("git push" ! project.log)
-        project.log.info("Bumped: '" + version + "' to " + newVersion)
+      def tag {
+        if(isGit) {
+          project.log.info("Tagging with git")
+          ("git tag v" + version.toString.trim) ! project.log
+          "git push --tags" ! project.log
+        } else {
+          project.log.info("Doesn't seem to be a git repository")
+        }
       }
 
-      def ship(project: Project, version: BasicVersion) {
+      def ship {
         project.act("publish")
       }
 
-      def incrementVersion(version: BasicVersion): BasicVersion = {
+      def bump {
+        val nv = nextVersion
+        val buildProperties: String = project.envBackingPath.toString
+        replaceContentInFile(buildProperties, "project.version=", nv.toString)
+        if(isGit) {
+          ("git add " + buildProperties ! project.log)
+          ("git commit -m [shipit]:bump" ! project.log)
+          ("git push" ! project.log)
+          project.log.info("Commited and pushed new version")
+        }
+        project.log.info("Bumped: '" + version + "' to " + nv)
+      }
+
+
+      def nextVersion: BasicVersion = {
         val maj = "^([0-9]+)$".r
         val min = "^([0-9]+)\\.([0-9]+)$".r
         val mic = "^([0-9]+)\\.([0-9]+)\\.([0-9]+).*$".r
@@ -43,30 +60,29 @@ object ShipIt {
         }
       }
 
-      if (!repoIsClean) {
-        project.log.info("You must check in all files")
+      if (isGit && !repoIsClean) {
+        project.log.info("Git repository is not clean. You must check in all files before shipping.")
         new Success(project, None)
-      }
-      else {
+      } else {
+        val Tag = "tag.*".r
         args match {
           case "tag" => {
-            tag(version)
+            tag
             new Success(project, None)
           }
           case "bump" => {
-            bump(project, version)
+            bump
             new Reload()
           }
-
-          case "help" => {
-            project.log.info("Available commands: tag, bump, ship")
-            new Success(project, None)
+          case "ship" => {
+            tag
+            ship
+            bump
+            new Reload()
           }
           case _ => {
-            tag(version)
-            ship(project, version)
-            bump(project, version)
-            new Reload()
+            help
+            new Success(project, None)
           }
         }
       }
@@ -89,11 +105,10 @@ object ShipIt {
       else line;
     }
 
-    val newBuildProperties: String = Source.fromFile(file).getLines.map(replace(_, key, value)).mkString
+    val newBuildProperties:String = Source.fromFile(file).getLines.map(replace(_, key, value)).mkString
 
     val out = new PrintWriter(new FileWriter(file))
     try {
-
       out.write(newBuildProperties);
     }
     finally {
